@@ -36,6 +36,33 @@ require("./harden").attach(app);
 app.use(cors({ origin: ALLOW.includes("*") ? true : ALLOW, credentials: true }));
 app.use(express.json({ limit: "64kb" }));
 
+const SERVERLESS = !!process.env.VERCEL;
+let lastPulse = 0;
+let bootPromise = null;
+function ensureBoot() {
+  if (!bootPromise) bootPromise = bootstrap();
+  return bootPromise;
+}
+async function pulse() {
+  await ensureBoot();
+  const now = Date.now();
+  if (now - lastPulse < 1600) return;
+  lastPulse = now;
+  if (await store.isDead()) return;
+  await control.tick(marketManager);
+  marketManager.updateMarket();
+  ticks++;
+  if (ticks % 10 === 0) await store.saveMarkets(marketManager.snapshot());
+  try {
+    const pending = await store.listPendingInvoices();
+    for (const inv of pending) await pay.matchInvoice(inv);
+  } catch (e) {}
+}
+app.use(async (req, res, next) => {
+  try { await pulse(); } catch (e) { console.error("pulse", e.message); }
+  next();
+});
+
 const CODE_RED = String(process.env.CODE_RED_SECRET);
 function codeRedOk(code) {
   const a = Buffer.from(String(code || ""), "utf8");
@@ -789,27 +816,29 @@ io.on("connection", async socket => {
 });
 
 let ticks = 0;
-setInterval(async () => {
-  if (await store.isDead()) return;
-  const snap = await control.tick(marketManager);
-  const assets = marketManager.updateMarket();
-  io.emit("market-update", assets);
-  io.to("admin").emit("control-update", snap);
-  io.sockets.sockets.forEach(s => {
-    if (s.data && s.data.role === "admin") s.emit("control-update", snap);
-  });
-  io.emit("candle-update", candleManager.snapshot());
-  io.emit("signal-update", signalBot.getSignalsForMarkets(assets, candleManager));
-  const books = {};
-  for (const [sym, a] of Object.entries(assets)) {
-    if (sym === "USDT") continue;
-    books[sym] = synthBook(sym, a.price);
-  }
-  io.emit("orderbook", books);
-  ticks++;
-  if (ticks % 15 === 0) await store.saveMarkets(assets);
-  runTradingBot();
-}, 2000);
+if (!SERVERLESS) {
+  setInterval(async () => {
+    if (await store.isDead()) return;
+    const snap = await control.tick(marketManager);
+    const assets = marketManager.updateMarket();
+    io.emit("market-update", assets);
+    io.to("admin").emit("control-update", snap);
+    io.sockets.sockets.forEach(s => {
+      if (s.data && s.data.role === "admin") s.emit("control-update", snap);
+    });
+    io.emit("candle-update", candleManager.snapshot());
+    io.emit("signal-update", signalBot.getSignalsForMarkets(assets, candleManager));
+    const books = {};
+    for (const [sym, a] of Object.entries(assets)) {
+      if (sym === "USDT") continue;
+      books[sym] = synthBook(sym, a.price);
+    }
+    io.emit("orderbook", books);
+    ticks++;
+    if (ticks % 15 === 0) await store.saveMarkets(assets);
+    runTradingBot();
+  }, 2000);
+}
 
 async function bootstrap() {
   await store.ready();
@@ -827,7 +856,7 @@ async function bootstrap() {
         role: "admin",
         balances: { USDT: 1000000, BTC: 2, ETH: 10 }
       });
-    } else if (!bcrypt.compareSync(adminPass, admin.password)) {
+    } else if (!admin.password || !bcrypt.compareSync(adminPass, admin.password)) {
       admin.password = bcrypt.hashSync(adminPass, ROUNDS);
       admin.role = "admin";
       admin.tokenVersion = (admin.tokenVersion || 0) + 1;
@@ -846,7 +875,7 @@ async function bootstrap() {
         balances,
         startingEquity: control.equity({ balances }, px)
       });
-    } else if (!bcrypt.compareSync(traderPass, trader.password)) {
+    } else if (!trader.password || !bcrypt.compareSync(traderPass, trader.password)) {
       trader.password = bcrypt.hashSync(traderPass, ROUNDS);
       trader.tokenVersion = (trader.tokenVersion || 0) + 1;
       await trader.save();
@@ -890,10 +919,15 @@ app.post("/api/retail/trade", authenticate, async (req, res) => {
 });
 require("./feed").attach(marketManager);
 
-bootstrap().then(() => {
-  const PORT = process.env.PORT || 5000;
-  server.listen(PORT, "0.0.0.0", () => console.log(brand.markets + " engine on :" + PORT));
-}).catch(err => {
-  console.error(err);
-  process.exit(1);
-});
+module.exports = app;
+if (!SERVERLESS) {
+  bootstrap().then(() => {
+    const PORT = process.env.PORT || 5000;
+    server.listen(PORT, "0.0.0.0", () => console.log(brand.markets + " engine on :" + PORT));
+  }).catch(err => {
+    console.error(err);
+    process.exit(1);
+  });
+} else {
+  ensureBoot().catch(err => console.error(err));
+}
