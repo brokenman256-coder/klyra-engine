@@ -1,13 +1,16 @@
 {
-  "name": "klyra-engine",
+  "name": "backend",
   "version": "1.0.0",
   "description": "Klyra engine",
   "main": "index.js",
   "engines": { "node": ">=18" },
   "scripts": {
     "start": "node index.js",
-    "dev": "node index.js"
+    "dev": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "keywords": [],
+  "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
