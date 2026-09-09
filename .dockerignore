@@ -1,0 +1,8 @@
+node_modules
+.env
+.git
+*.log
+data.json
+_cf_*.json
+index.js`
+.railway

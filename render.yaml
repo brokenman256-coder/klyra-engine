@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: klyra-engine
+    runtime: node
+    plan: starter
+    buildCommand: npm install --omit=dev
+    startCommand: node index.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
