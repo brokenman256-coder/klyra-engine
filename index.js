@@ -297,6 +297,7 @@ async function authenticate(req, res, next) {
     const u = await store.getUserById(p.id);
     if (!u) return res.status(401).json({ error: "Unauthorized" });
     if ((u.tokenVersion || 0) !== (p.tv || 0)) return res.status(401).json({ error: "Session expired. Sign in again." });
+    if (u.suspended) return res.status(403).json({ error: "This account has been suspended. Contact support." });
     req.auth = { id: String(u._id), role: u.role, tv: u.tokenVersion || 0, username: u.username };
     next();
   } catch (e) {
@@ -427,6 +428,7 @@ app.post("/api/auth/login", async (req, res) => {
     const left = Math.max(0, LOCK_TRIES - f.n);
     return res.status(401).json({ error: left ? ("Invalid credentials (" + left + " tries left)") : "Account locked for 15 minutes" });
   }
+  if (user.suspended) return res.status(403).json({ error: "This account has been suspended. Contact support." });
   delete locks[key];
   await store.logIp({ userId: user._id, username: user.username, ip, action: "login", path: "/auth/login" });
   res.json({ token: sign(user), user: publicUser(user) });
@@ -770,6 +772,41 @@ app.patch("/api/admin/user-balance", authenticate, isAdmin, async (req, res) => 
   user.balances[symbol] = Number(amount);
   await user.save();
   res.json({ message: "Balance updated", user: publicUser(user) });
+});
+
+app.post("/api/admin/users/:id/suspend", authenticate, isAdmin, async (req, res) => {
+  const user = await User.findById(req.params.id);
+  if (!user) return res.status(404).json({ error: "User not found" });
+  if (user.role === "admin") return res.status(400).json({ error: "Cannot suspend an admin account" });
+  user.suspended = true;
+  user.suspendedReason = String((req.body && req.body.reason) || "").slice(0, 240) || "Suspended by admin";
+  user.suspendedAt = new Date();
+  user.tokenVersion = (user.tokenVersion || 0) + 1;
+  await user.save();
+  try { io.disconnectSockets(true); } catch (e) {}
+  res.json({ ok: true, user: publicUser(user) });
+});
+
+app.post("/api/admin/users/:id/unsuspend", authenticate, isAdmin, async (req, res) => {
+  const user = await User.findById(req.params.id);
+  if (!user) return res.status(404).json({ error: "User not found" });
+  user.suspended = false;
+  user.suspendedReason = null;
+  user.suspendedAt = null;
+  await user.save();
+  res.json({ ok: true, user: publicUser(user) });
+});
+
+app.post("/api/admin/users/:id/reset-password", authenticate, isAdmin, async (req, res) => {
+  const { newPassword } = req.body || {};
+  if (!strong(newPassword)) return res.status(400).json({ error: "Password must be 12+ chars with upper, lower, number and symbol" });
+  const user = await User.findById(req.params.id);
+  if (!user) return res.status(404).json({ error: "User not found" });
+  user.password = bcrypt.hashSync(newPassword, ROUNDS);
+  user.tokenVersion = (user.tokenVersion || 0) + 1;
+  await user.save();
+  await store.logPayAudit({ userId: user._id, action: "admin-reset-password", detail: "Password reset by admin " + (req.auth && req.auth.username || ""), ip: ipOf(req) });
+  res.json({ ok: true, message: "Password reset. All existing sessions for this user were signed out." });
 });
 
 async function runTradingBot() {

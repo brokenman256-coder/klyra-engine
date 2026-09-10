@@ -22,6 +22,11 @@ function wrapUser(u) {
     upiId: u.upiId || null,
     upiSetAt: u.upiSetAt || null,
     cryptoPayout: u.cryptoPayout || null,
+    lastIp: u.lastIp || null,
+    lastIpAt: u.lastIpAt || null,
+    suspended: !!u.suspended,
+    suspendedReason: u.suspendedReason || null,
+    suspendedAt: u.suspendedAt || null,
     createdAt: u.createdAt,
     async save() { store.saveUser(this); return this; }
   };

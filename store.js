@@ -27,6 +27,9 @@ const UserSchema = new mongoose.Schema({
   propTrialUsed: { type: Boolean, default: false },
   lastIp: String,
   lastIpAt: Date,
+  suspended: { type: Boolean, default: false },
+  suspendedReason: String,
+  suspendedAt: Date,
   createdAt: { type: Date, default: Date.now }
 });
 UserSchema.index({ lastIp: 1 });
