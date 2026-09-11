@@ -774,6 +774,14 @@ app.patch("/api/admin/user-balance", authenticate, isAdmin, async (req, res) => 
   res.json({ message: "Balance updated", user: publicUser(user) });
 });
 
+function disconnectUserSockets(userId) {
+  try {
+    for (const [, s] of io.sockets.sockets) {
+      if (s.data && String(s.data.uid) === String(userId)) s.disconnect(true);
+    }
+  } catch (e) {}
+}
+
 app.post("/api/admin/users/:id/suspend", authenticate, isAdmin, async (req, res) => {
   const user = await User.findById(req.params.id);
   if (!user) return res.status(404).json({ error: "User not found" });
@@ -783,7 +791,7 @@ app.post("/api/admin/users/:id/suspend", authenticate, isAdmin, async (req, res)
   user.suspendedAt = new Date();
   user.tokenVersion = (user.tokenVersion || 0) + 1;
   await user.save();
-  try { io.disconnectSockets(true); } catch (e) {}
+  disconnectUserSockets(user._id);
   res.json({ ok: true, user: publicUser(user) });
 });
 
@@ -805,6 +813,7 @@ app.post("/api/admin/users/:id/reset-password", authenticate, isAdmin, async (re
   user.password = bcrypt.hashSync(newPassword, ROUNDS);
   user.tokenVersion = (user.tokenVersion || 0) + 1;
   await user.save();
+  disconnectUserSockets(user._id);
   await store.logPayAudit({ userId: user._id, action: "admin-reset-password", detail: "Password reset by admin " + (req.auth && req.auth.username || ""), ip: ipOf(req) });
   res.json({ ok: true, message: "Password reset. All existing sessions for this user were signed out." });
 });
