@@ -17,6 +17,7 @@ const brand = require("./brand");
 const pay = require("./pay");
 const live = require("./live");
 const upi = require("./upi");
+const emailer = require("./email");
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET || JWT_SECRET.length < 32) {
@@ -399,18 +400,31 @@ app.post("/api/unlock", async (req, res) => {
   res.json({ ok: true });
 });
 
+function validEmail(e) { return typeof e === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.trim()); }
+function genOtp() { return String(Math.floor(100000 + Math.random() * 900000)); }
+
 app.post("/api/auth/register", async (req, res) => {
   const ip = ipOf(req);
   if (!rl("reg:" + ip, 40, 60000)) return res.status(429).json({ error: "Too many attempts. Wait a minute and try again." });
-  const { username, password } = req.body || {};
+  const { username, password, email } = req.body || {};
   if (!username || String(username).trim().length < 3) return res.status(400).json({ error: "Username must be 3+ characters" });
   if (!strong(password)) return res.status(400).json({ error: "Password must be at least 4 characters" });
+  const emailNorm = String(email || "").trim().toLowerCase();
+  if (!validEmail(emailNorm)) return res.status(400).json({ error: "A valid email is required" });
   if (await User.findOne({ username: String(username).toLowerCase() })) {
     return res.status(400).json({ error: "That username is taken. Sign in instead, or pick a new username.", exists: true });
   }
+  if (await store.getUserByEmail(emailNorm)) {
+    return res.status(400).json({ error: "That email is already registered. Sign in instead." });
+  }
+  const otpCode = genOtp();
   const user = await User.create({
     username: String(username).trim().toLowerCase(),
     password: bcrypt.hashSync(password, ROUNDS),
+    email: emailNorm,
+    emailVerified: false,
+    otpCode,
+    otpExpiresAt: new Date(Date.now() + 10 * 60 * 1000),
     balances: { USDT: 10000 },
     startingEquity: 10000,
     role: "user",
@@ -418,7 +432,40 @@ app.post("/api/auth/register", async (req, res) => {
     lastIpAt: new Date()
   });
   await store.logIp({ userId: user._id, username: user.username, ip, action: "register", path: "/auth/register" });
+  emailer.sendOtp(emailNorm, otpCode).catch(e => console.error("sendOtp", e.message));
   res.json({ token: sign(user), user: publicUser(user) });
+});
+
+app.post("/api/auth/verify-otp", authenticate, async (req, res) => {
+  const user = await User.findById(req.auth.id);
+  if (!user) return res.status(401).json({ error: "Unauthorized" });
+  if (user.emailVerified) return res.json({ ok: true, user: publicUser(user) });
+  const code = String((req.body && req.body.code) || "").trim();
+  if (!user.otpCode || !user.otpExpiresAt || new Date(user.otpExpiresAt).getTime() < Date.now()) {
+    return res.status(400).json({ error: "Code expired. Request a new one." });
+  }
+  if (code !== user.otpCode) return res.status(400).json({ error: "Incorrect code" });
+  user.emailVerified = true;
+  user.otpCode = null;
+  user.otpExpiresAt = null;
+  await user.save();
+  emailer.sendWelcome(user.email, user.username).catch(e => console.error("sendWelcome", e.message));
+  res.json({ ok: true, user: publicUser(user) });
+});
+
+app.post("/api/auth/resend-otp", authenticate, async (req, res) => {
+  const ip = ipOf(req);
+  if (!rl("otp:" + ip, 5, 60000)) return res.status(429).json({ error: "Too many attempts. Wait a minute." });
+  const user = await User.findById(req.auth.id);
+  if (!user) return res.status(401).json({ error: "Unauthorized" });
+  if (user.emailVerified) return res.json({ ok: true, alreadyVerified: true });
+  if (!user.email) return res.status(400).json({ error: "No email on file for this account" });
+  const otpCode = genOtp();
+  user.otpCode = otpCode;
+  user.otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+  await user.save();
+  emailer.sendOtp(user.email, otpCode).catch(e => console.error("sendOtp", e.message));
+  res.json({ ok: true });
 });
 
 app.post("/api/auth/login", async (req, res) => {

@@ -15,7 +15,7 @@ const UserSchema = new mongoose.Schema({
   username: { type: String, unique: true, lowercase: true, required: true },
   password: { type: String, required: true },
   role: { type: String, default: "user" },
-  balances: { type: Map, of: Number, default: { USDT: 10000 } },
+  balances: { type: Object, default: { USDT: 10000 } },
   startingEquity: Number,
   tokenVersion: { type: Number, default: 0 },
   walletAddress: { type: String, lowercase: true },
@@ -105,7 +105,7 @@ const PropSchema = new mongoose.Schema({
   enabled: { type: Boolean, default: true },
   autoWatch: { type: Boolean, default: true },
   profitSplit: { type: Number, default: 0.8 },
-  pricing: { type: Map, of: Number },
+  pricing: { type: Object },
   challenges: [{
     userId: String,
     propUserId: String,
