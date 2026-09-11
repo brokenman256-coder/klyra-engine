@@ -27,6 +27,10 @@ function wrapUser(u) {
     suspended: !!u.suspended,
     suspendedReason: u.suspendedReason || null,
     suspendedAt: u.suspendedAt || null,
+    email: u.email || null,
+    emailVerified: !!u.emailVerified,
+    otpCode: u.otpCode || null,
+    otpExpiresAt: u.otpExpiresAt || null,
     createdAt: u.createdAt,
     async save() { store.saveUser(this); return this; }
   };
@@ -42,12 +46,13 @@ function wrapBot(b) {
 }
 
 const User = {
-  async create(doc) { return wrapUser(store.createUser(doc)); },
-  async findById(id) { return wrapUser(store.getUserById(id)); },
+  async create(doc) { return wrapUser(await store.createUser(doc)); },
+  async findById(id) { return wrapUser(await store.getUserById(id)); },
   async findOne(q) {
-    if (q && q.username) return wrapUser(store.getUserByUsername(q.username));
-    if (q && q.walletAddress) return wrapUser(store.getUserByWallet(q.walletAddress));
-    if (q && q._id) return wrapUser(store.getUserById(q._id));
+    if (q && q.username) return wrapUser(await store.getUserByUsername(q.username));
+    if (q && q.walletAddress) return wrapUser(await store.getUserByWallet(q.walletAddress));
+    if (q && q.email) return wrapUser(await store.getUserByEmail(q.email));
+    if (q && q._id) return wrapUser(await store.getUserById(q._id));
     return null;
   },
   async find() { return (await store.listUsers()).map(wrapUser); }

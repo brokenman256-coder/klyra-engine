@@ -258,7 +258,10 @@ function publicUser(u) {
     upiId: u.upiId || null,
     cryptoPayout: u.cryptoPayout || null,
     lastIp: u.lastIp || null,
-    lastIpAt: u.lastIpAt || null
+    lastIpAt: u.lastIpAt || null,
+    email: u.email || null,
+    emailVerified: !!u.emailVerified,
+    suspended: !!u.suspended
   };
 }
 const DUMMY = bcrypt.hashSync("not-a-real-password-dummy", 10);

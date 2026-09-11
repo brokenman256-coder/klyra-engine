@@ -30,6 +30,10 @@ const UserSchema = new mongoose.Schema({
   suspended: { type: Boolean, default: false },
   suspendedReason: String,
   suspendedAt: Date,
+  email: { type: String, lowercase: true, trim: true, sparse: true, unique: true },
+  emailVerified: { type: Boolean, default: false },
+  otpCode: String,
+  otpExpiresAt: Date,
   createdAt: { type: Date, default: Date.now }
 });
 UserSchema.index({ lastIp: 1 });
@@ -37,6 +41,7 @@ UserSchema.index({ username: 1 }, { unique: true });
 UserSchema.index({ upiId: 1 }, { unique: true, sparse: true });
 UserSchema.index({ cryptoPayout: 1 }, { unique: true, sparse: true });
 UserSchema.index({ walletAddress: 1 }, { unique: true, sparse: true });
+UserSchema.index({ email: 1 }, { unique: true, sparse: true });
 
 const TradeSchema = new mongoose.Schema({
   userId: String,
@@ -290,6 +295,11 @@ const id = () => new mongoose.Types.ObjectId().toHexString();
 
 async function getUserByUsername(username) {
   return await User.findOne({ username: String(username || "").toLowerCase() });
+}
+async function getUserByEmail(email) {
+  const e = String(email || "").trim().toLowerCase();
+  if (!e) return null;
+  return await User.findOne({ email: e });
 }
 async function getUserById(uid) {
   return await User.findById(uid);
@@ -660,7 +670,7 @@ async function revenueSummary() {
 module.exports = {
   ready,
   id,
-  getUserByUsername, getUserById, getUserByUpi, getUserByWallet, listUsers, createUser, saveUser,
+  getUserByUsername, getUserByEmail, getUserById, getUserByUpi, getUserByWallet, listUsers, createUser, saveUser,
   logPayAudit, upsertPayIdentity, utrTaken, registerUtr, listPayAudits,
   logIp, listIps, countUsersOnIp,
   createTrade, tradesOf, allTrades,
