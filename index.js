@@ -410,17 +410,17 @@ app.post("/api/auth/register", async (req, res) => {
   if (!username || String(username).trim().length < 3) return res.status(400).json({ error: "Username must be 3+ characters" });
   if (!strong(password)) return res.status(400).json({ error: "Password must be at least 4 characters" });
   const emailNorm = String(email || "").trim().toLowerCase();
-  if (!validEmail(emailNorm)) return res.status(400).json({ error: "A valid email is required" });
+  if (emailNorm && !validEmail(emailNorm)) return res.status(400).json({ error: "That email address looks invalid" });
   if (await User.findOne({ username: String(username).toLowerCase() })) {
     return res.status(400).json({ error: "That username is taken. Sign in instead, or pick a new username.", exists: true });
   }
-  if (await store.getUserByEmail(emailNorm)) {
+  if (emailNorm && (await store.getUserByEmail(emailNorm))) {
     return res.status(400).json({ error: "That email is already registered. Sign in instead." });
   }
   const user = await User.create({
     username: String(username).trim().toLowerCase(),
     password: bcrypt.hashSync(password, ROUNDS),
-    email: emailNorm,
+    email: emailNorm || undefined,
     emailVerified: true,
     balances: { USDT: 10000 },
     startingEquity: 10000,
@@ -429,9 +429,11 @@ app.post("/api/auth/register", async (req, res) => {
     lastIpAt: new Date()
   });
   await store.logIp({ userId: user._id, username: user.username, ip, action: "register", path: "/auth/register" });
-  emailer.sendWelcome(emailNorm, { username: user.username, userId: String(user._id) })
-    .then(mail => store.logMail({ userId: user._id, subject: mail.subject, html: mail.html, kind: "welcome" }))
-    .catch(e => console.error("sendWelcome", e.message));
+  if (emailNorm) {
+    emailer.sendWelcome(emailNorm, { username: user.username, userId: String(user._id) })
+      .then(mail => store.logMail({ userId: user._id, subject: mail.subject, html: mail.html, kind: "welcome" }))
+      .catch(e => console.error("sendWelcome", e.message));
+  }
   res.json({ token: sign(user), user: publicUser(user) });
 });
 
