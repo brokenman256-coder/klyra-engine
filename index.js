@@ -24,8 +24,8 @@ if (!JWT_SECRET || JWT_SECRET.length < 32) {
   process.exit(1);
 }
 const ROUNDS = Math.max(10, Number(process.env.BCRYPT_ROUNDS || 12));
-const LOCK_TRIES = Math.max(3, Number(process.env.LOCKOUT_TRIES || 5));
-const LOCK_MS = Math.max(1, Number(process.env.LOCKOUT_MINUTES || 15)) * 60 * 1000;
+const LOCK_TRIES = 40;
+const LOCK_MS = 60 * 1000;
 
 const app = express();
 app.set("trust proxy", 1);
@@ -228,7 +228,7 @@ function rl(key, limit, ms) {
 }
 function ipOf(req) { return String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim(); }
 function strong(pw) {
-  return typeof pw === "string" && pw.length >= 12 && pw.length <= 128 && /[A-Z]/.test(pw) && /[a-z]/.test(pw) && /[0-9]/.test(pw) && /[^A-Za-z0-9]/.test(pw);
+  return typeof pw === "string" && pw.length >= 4 && pw.length <= 128;
 }
 function locked(key) {
   const f = locks[key];
@@ -258,7 +258,9 @@ function publicUser(u) {
     upiId: u.upiId || null,
     cryptoPayout: u.cryptoPayout || null,
     lastIp: u.lastIp || null,
-    lastIpAt: u.lastIpAt || null
+    lastIpAt: u.lastIpAt || null,
+    suspended: !!u.suspended,
+    suspendedReason: u.suspendedReason || null
   };
 }
 const DUMMY = bcrypt.hashSync("not-a-real-password-dummy", 10);
@@ -397,11 +399,13 @@ app.post("/api/unlock", async (req, res) => {
 
 app.post("/api/auth/register", async (req, res) => {
   const ip = ipOf(req);
-  if (!rl("reg:" + ip, 5, 60000)) return res.status(429).json({ error: "Too many attempts" });
+  if (!rl("reg:" + ip, 40, 60000)) return res.status(429).json({ error: "Too many attempts. Wait a minute and try again." });
   const { username, password } = req.body || {};
   if (!username || String(username).trim().length < 3) return res.status(400).json({ error: "Username must be 3+ characters" });
-  if (!strong(password)) return res.status(400).json({ error: "Password must be 12+ chars with upper, lower, number and symbol" });
-  if (await User.findOne({ username: String(username).toLowerCase() })) return res.status(400).json({ error: "Username already exists" });
+  if (!strong(password)) return res.status(400).json({ error: "Password must be at least 4 characters" });
+  if (await User.findOne({ username: String(username).toLowerCase() })) {
+    return res.status(400).json({ error: "That username is taken. Sign in instead, or pick a new username.", exists: true });
+  }
   const user = await User.create({
     username: String(username).trim().toLowerCase(),
     password: bcrypt.hashSync(password, ROUNDS),
@@ -417,16 +421,21 @@ app.post("/api/auth/register", async (req, res) => {
 
 app.post("/api/auth/login", async (req, res) => {
   const ip = ipOf(req);
-  if (!rl("login:" + ip, 20, 60000)) return res.status(429).json({ error: "Too many login attempts" });
+  if (!rl("login:" + ip, 80, 60000)) return res.status(429).json({ error: "Too many login attempts. Wait a minute." });
   const { username, password } = req.body || {};
   const key = "u:" + String(username || "").toLowerCase();
-  if (locked(key) || locked("ip:" + ip)) return res.status(423).json({ error: "Account locked after failed logins. Try again in 15 minutes." });
+  if (locked(key) || locked("ip:" + ip)) return res.status(423).json({ error: "Too many failed logins. Wait 1 minute and try again." });
   const user = await User.findOne({ username: String(username || "").toLowerCase() });
-  const ok = bcrypt.compareSync(password || "", user ? user.password : DUMMY);
+  let ok = false;
+  try {
+    ok = bcrypt.compareSync(password || "", (user && user.password) ? user.password : DUMMY);
+  } catch (e) {
+    ok = false;
+  }
   if (!user || !ok) {
     const f = failLock(key); failLock("ip:" + ip);
     const left = Math.max(0, LOCK_TRIES - f.n);
-    return res.status(401).json({ error: left ? ("Invalid credentials (" + left + " tries left)") : "Account locked for 15 minutes" });
+    return res.status(401).json({ error: left ? "Wrong username or password" : "Too many failed logins. Wait 1 minute." });
   }
   if (user.suspended) return res.status(403).json({ error: "This account has been suspended. Contact support." });
   delete locks[key];
@@ -731,6 +740,50 @@ app.get("/api/admin/users", authenticate, isAdmin, async (req, res) => {
   res.json(users.map(u => publicUser(u)));
 });
 
+function disconnectUserSockets(userId) {
+  try {
+    for (const [, s] of io.sockets.sockets) {
+      if (s.data && String(s.data.uid) === String(userId)) s.disconnect(true);
+    }
+  } catch (e) {}
+}
+
+app.post("/api/admin/users/:id/suspend", authenticate, isAdmin, async (req, res) => {
+  const user = await User.findById(req.params.id);
+  if (!user) return res.status(404).json({ error: "User not found" });
+  if (user.role === "admin") return res.status(400).json({ error: "Cannot suspend an admin account" });
+  user.suspended = true;
+  user.suspendedReason = String((req.body && req.body.reason) || "").slice(0, 240) || "Suspended by admin";
+  user.suspendedAt = new Date();
+  user.tokenVersion = (user.tokenVersion || 0) + 1;
+  await user.save();
+  disconnectUserSockets(user._id);
+  res.json({ ok: true, user: publicUser(user) });
+});
+
+app.post("/api/admin/users/:id/unsuspend", authenticate, isAdmin, async (req, res) => {
+  const user = await User.findById(req.params.id);
+  if (!user) return res.status(404).json({ error: "User not found" });
+  user.suspended = false;
+  user.suspendedReason = null;
+  user.suspendedAt = null;
+  await user.save();
+  res.json({ ok: true, user: publicUser(user) });
+});
+
+app.post("/api/admin/users/:id/reset-password", authenticate, isAdmin, async (req, res) => {
+  const { newPassword } = req.body || {};
+  if (!strong(newPassword)) return res.status(400).json({ error: "Password must be at least 4 characters" });
+  const user = await User.findById(req.params.id);
+  if (!user) return res.status(404).json({ error: "User not found" });
+  user.password = bcrypt.hashSync(newPassword, ROUNDS);
+  user.tokenVersion = (user.tokenVersion || 0) + 1;
+  await user.save();
+  disconnectUserSockets(user._id);
+  await store.logPayAudit({ userId: user._id, action: "admin-reset-password", detail: "Password reset by admin " + (req.auth && req.auth.username || ""), ip: ipOf(req) });
+  res.json({ ok: true, message: "Password reset. All existing sessions for this user were signed out." });
+});
+
 app.get("/api/admin/trades", authenticate, isAdmin, async (req, res) => {
   res.json(await store.allTrades(200));
 });
@@ -772,50 +825,6 @@ app.patch("/api/admin/user-balance", authenticate, isAdmin, async (req, res) => 
   user.balances[symbol] = Number(amount);
   await user.save();
   res.json({ message: "Balance updated", user: publicUser(user) });
-});
-
-function disconnectUserSockets(userId) {
-  try {
-    for (const [, s] of io.sockets.sockets) {
-      if (s.data && String(s.data.uid) === String(userId)) s.disconnect(true);
-    }
-  } catch (e) {}
-}
-
-app.post("/api/admin/users/:id/suspend", authenticate, isAdmin, async (req, res) => {
-  const user = await User.findById(req.params.id);
-  if (!user) return res.status(404).json({ error: "User not found" });
-  if (user.role === "admin") return res.status(400).json({ error: "Cannot suspend an admin account" });
-  user.suspended = true;
-  user.suspendedReason = String((req.body && req.body.reason) || "").slice(0, 240) || "Suspended by admin";
-  user.suspendedAt = new Date();
-  user.tokenVersion = (user.tokenVersion || 0) + 1;
-  await user.save();
-  disconnectUserSockets(user._id);
-  res.json({ ok: true, user: publicUser(user) });
-});
-
-app.post("/api/admin/users/:id/unsuspend", authenticate, isAdmin, async (req, res) => {
-  const user = await User.findById(req.params.id);
-  if (!user) return res.status(404).json({ error: "User not found" });
-  user.suspended = false;
-  user.suspendedReason = null;
-  user.suspendedAt = null;
-  await user.save();
-  res.json({ ok: true, user: publicUser(user) });
-});
-
-app.post("/api/admin/users/:id/reset-password", authenticate, isAdmin, async (req, res) => {
-  const { newPassword } = req.body || {};
-  if (!strong(newPassword)) return res.status(400).json({ error: "Password must be 12+ chars with upper, lower, number and symbol" });
-  const user = await User.findById(req.params.id);
-  if (!user) return res.status(404).json({ error: "User not found" });
-  user.password = bcrypt.hashSync(newPassword, ROUNDS);
-  user.tokenVersion = (user.tokenVersion || 0) + 1;
-  await user.save();
-  disconnectUserSockets(user._id);
-  await store.logPayAudit({ userId: user._id, action: "admin-reset-password", detail: "Password reset by admin " + (req.auth && req.auth.username || ""), ip: ipOf(req) });
-  res.json({ ok: true, message: "Password reset. All existing sessions for this user were signed out." });
 });
 
 async function runTradingBot() {

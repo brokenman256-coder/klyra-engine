@@ -27,7 +27,7 @@ function floodGuard(req, res, next) {
   const row = (hits[ip] || []).filter(t => now - t < 10000);
   row.push(now);
   hits[ip] = row;
-  if (row.length > 80) return res.status(429).json({ error: "Too many requests" });
+  if (row.length > 200) return res.status(429).json({ error: "Too many requests" });
   next();
 }
 

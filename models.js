@@ -28,7 +28,7 @@ function wrapUser(u) {
     suspendedReason: u.suspendedReason || null,
     suspendedAt: u.suspendedAt || null,
     createdAt: u.createdAt,
-    async save() { store.saveUser(this); return this; }
+    async save() { await store.saveUser(this); return this; }
   };
   return row;
 }
@@ -42,12 +42,12 @@ function wrapBot(b) {
 }
 
 const User = {
-  async create(doc) { return wrapUser(store.createUser(doc)); },
-  async findById(id) { return wrapUser(store.getUserById(id)); },
+  async create(doc) { return wrapUser(await store.createUser(doc)); },
+  async findById(id) { return wrapUser(await store.getUserById(id)); },
   async findOne(q) {
-    if (q && q.username) return wrapUser(store.getUserByUsername(q.username));
-    if (q && q.walletAddress) return wrapUser(store.getUserByWallet(q.walletAddress));
-    if (q && q._id) return wrapUser(store.getUserById(q._id));
+    if (q && q.username) return wrapUser(await store.getUserByUsername(q.username));
+    if (q && q.walletAddress) return wrapUser(await store.getUserByWallet(q.walletAddress));
+    if (q && q._id) return wrapUser(await store.getUserById(q._id));
     return null;
   },
   async find() { return (await store.listUsers()).map(wrapUser); }
@@ -56,12 +56,17 @@ const User = {
 const Trade = {
   async create(doc) { return store.createTrade(doc); },
   find(q) {
-    const rows = q && q.userId ? store.tradesOf(q.userId, 200) : store.allTrades(200);
+    const pending = q && q.userId ? store.tradesOf(q.userId, 200) : store.allTrades(200);
     return {
-      _rows: rows,
+      _rows: [],
       sort() { return this; },
-      limit(n) { this._rows = rows.slice(0, n); return this; },
-      then(res, rej) { return Promise.resolve(this._rows).then(res, rej); }
+      limit(n) { this._rows = this._rows.slice(0, n); return this; },
+      then(res, rej) {
+        return Promise.resolve(pending).then(rows => {
+          this._rows = rows;
+          return rows;
+        }).then(res, rej);
+      }
     };
   }
 };
@@ -71,17 +76,17 @@ const Order = {
   async findActive() { return store.listActiveOrders(); },
   async delete(id) { return store.deleteOrder(id); },
   async update(id, updates) {
-    const o = store.getOrderById(id);
+    const o = await store.getOrderById(id);
     if (!o) return null;
     Object.assign(o, updates);
-    store.saveOrder(o);
+    await store.saveOrder(o);
     return o;
   }
 };
 
 const BotSetting = {
-  async create(doc) { return wrapBot(store.createBot(doc)); },
-  async findOne(q) { return wrapBot(store.getBot((q && q.botName) || "MainBot")); }
+  async create(doc) { return wrapBot(await store.createBot(doc)); },
+  async findOne(q) { return wrapBot(await store.getBot((q && q.botName) || "MainBot")); }
 };
 
 module.exports = { User, Trade, BotSetting, Order };
