@@ -417,14 +417,11 @@ app.post("/api/auth/register", async (req, res) => {
   if (await store.getUserByEmail(emailNorm)) {
     return res.status(400).json({ error: "That email is already registered. Sign in instead." });
   }
-  const otpCode = genOtp();
   const user = await User.create({
     username: String(username).trim().toLowerCase(),
     password: bcrypt.hashSync(password, ROUNDS),
     email: emailNorm,
-    emailVerified: false,
-    otpCode,
-    otpExpiresAt: new Date(Date.now() + 10 * 60 * 1000),
+    emailVerified: true,
     balances: { USDT: 10000 },
     startingEquity: 10000,
     role: "user",
@@ -432,7 +429,9 @@ app.post("/api/auth/register", async (req, res) => {
     lastIpAt: new Date()
   });
   await store.logIp({ userId: user._id, username: user.username, ip, action: "register", path: "/auth/register" });
-  emailer.sendOtp(emailNorm, otpCode).catch(e => console.error("sendOtp", e.message));
+  emailer.sendWelcome(emailNorm, { username: user.username, userId: String(user._id) })
+    .then(mail => store.logMail({ userId: user._id, subject: mail.subject, html: mail.html, kind: "welcome" }))
+    .catch(e => console.error("sendWelcome", e.message));
   res.json({ token: sign(user), user: publicUser(user) });
 });
 
@@ -496,6 +495,10 @@ app.get("/api/me", authenticate, async (req, res) => {
   const user = await User.findById(req.auth.id);
   if (!user) return res.status(401).json({ error: "Unauthorized" });
   res.json({ user: publicUser(user) });
+});
+
+app.get("/api/me/mail", authenticate, async (req, res) => {
+  res.json({ mail: await store.listMail(req.auth.id, 50) });
 });
 
 const paycheck = require("./paycheck");

@@ -264,7 +264,6 @@ function attach(app, deps) {
     try {
       const user = await store.getUserById(req.auth.id);
       if (!user) return res.status(401).json({ error: "Unauthorized" });
-      if (!user.emailVerified) return res.status(403).json({ error: "Verify your email before buying a challenge.", needsVerification: true });
       const { tier, chain } = req.body || {};
       if (!rlProp(req, "inv", 6)) return res.status(429).json({ error: "Too many invoices" });
       const ip = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim();

@@ -44,9 +44,10 @@ async function sendMail({ to, subject, html }) {
   if (!t) {
     console.log("[email:dev-mode, GMAIL_USER/GMAIL_APP_PASSWORD not set] to=" + to + " subject=" + subject);
     console.log(html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
-    return { devMode: true };
+  } else {
+    await t.sendMail({ from: `"${brand.capital}" <${process.env.GMAIL_USER}>`, to, subject, html });
   }
-  return t.sendMail({ from: `"${brand.capital}" <${process.env.GMAIL_USER}>`, to, subject, html });
+  return { subject, html };
 }
 
 async function sendOtp(to, code) {
@@ -58,13 +59,18 @@ async function sendOtp(to, code) {
   return sendMail({ to, subject: `${code} is your ${brand.capital} verification code`, html });
 }
 
-async function sendWelcome(to, username) {
+async function sendWelcome(to, { username, userId }) {
   const html = wrap("Welcome to " + brand.capital, `
     <p>Hi ${username},</p>
-    <p>Your account is verified and ready. Fund a challenge seat with USDT (TRC-20) whenever you're ready to trade.</p>
+    <p>Your account is ready. Fund a challenge seat with USDT (TRC-20) whenever you're ready to trade.</p>
+    <table cellpadding="8" style="background:#0a1220;border:1px solid #1c2a40;border-radius:10px;margin:14px 0;width:100%;">
+      <tr><td style="color:#8fa3bd;">Username</td><td style="color:#eef3fb;font-family:monospace;">${username}</td></tr>
+      <tr><td style="color:#8fa3bd;">Account ID</td><td style="color:#eef3fb;font-family:monospace;">${userId}</td></tr>
+    </table>
+    <p>Keep this email as a reference for your unique account ID.</p>
     ${btn("https://klyra-capital.pages.dev", "Open Klyra Capital")}
   `);
-  return sendMail({ to, subject: `Welcome to ${brand.capital}`, html });
+  return sendMail({ to, subject: `Welcome to ${brand.capital} — your account ID`, html });
 }
 
 async function sendChallengeCredentials(to, { username, password, tierLabel, accountSize }) {

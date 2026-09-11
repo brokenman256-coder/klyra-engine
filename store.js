@@ -280,6 +280,16 @@ IpLogSchema.index({ ip: 1, createdAt: -1 });
 IpLogSchema.index({ userId: 1, createdAt: -1 });
 const IpLog = mongoose.model("IpLog", IpLogSchema);
 
+const MailLogSchema = new mongoose.Schema({
+  userId: { type: String, required: true, index: true },
+  subject: { type: String, required: true },
+  html: { type: String, required: true },
+  kind: String,
+  createdAt: { type: Date, default: Date.now }
+});
+MailLogSchema.index({ userId: 1, createdAt: -1 });
+const MailLog = mongoose.model("MailLog", MailLogSchema);
+
 mongoose.connection.once("open", () => {
   Promise.all([
     User.syncIndexes(),
@@ -377,6 +387,14 @@ async function logIp({ userId, username, ip, action, path }) {
   if (userId) {
     await User.findByIdAndUpdate(userId, { lastIp: addr, lastIpAt: new Date() });
   }
+}
+
+async function logMail({ userId, subject, html, kind }) {
+  if (!userId) return;
+  await MailLog.create({ userId: String(userId), subject: String(subject || "").slice(0, 200), html: String(html || ""), kind: kind || "" });
+}
+async function listMail(userId, limit) {
+  return await MailLog.find({ userId: String(userId) }).sort({ createdAt: -1 }).limit(limit || 50).lean();
 }
 
 async function listIps({ userId, ip, limit }) {
@@ -673,6 +691,7 @@ module.exports = {
   getUserByUsername, getUserByEmail, getUserById, getUserByUpi, getUserByWallet, listUsers, createUser, saveUser,
   logPayAudit, upsertPayIdentity, utrTaken, registerUtr, listPayAudits,
   logIp, listIps, countUsersOnIp,
+  logMail, listMail,
   createTrade, tradesOf, allTrades,
   createOrder, listActiveOrders, getOrderById, saveOrder, deleteOrder,
   getBot, createBot, saveBot,
