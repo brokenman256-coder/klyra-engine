@@ -179,7 +179,8 @@ const InvoiceSchema = new mongoose.Schema({
   createdAt: String,
   expiresAt: String,
   confirmedAt: String,
-  bookedRevenue: { type: Boolean, default: false }
+  bookedRevenue: { type: Boolean, default: false },
+  challengeId: String
 });
 
 const User = mongoose.model("User", UserSchema);

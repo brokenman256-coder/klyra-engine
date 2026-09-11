@@ -1028,7 +1028,7 @@ require("./feed").attach(marketManager);
 
 module.exports = app;
 if (!SERVERLESS) {
-  bootstrap().then(() => {
+  ensureBoot().then(() => {
     const PORT = process.env.PORT || 5000;
     server.listen(PORT, "0.0.0.0", () => console.log(brand.markets + " engine on :" + PORT));
   }).catch(err => {

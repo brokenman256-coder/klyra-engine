@@ -348,8 +348,35 @@ function attach(app, deps) {
       profitSplit: p.profitSplit,
       pricing: p.pricing,
       challenges: (await store.listPropChallenges()).map(publicChallenge),
-      payouts: await store.listPropPayouts()
+      payouts: await store.listPropPayouts(),
+      pendingInvoices: (await store.listPendingInvoices()).map(pay.publicInvoice)
     });
+  });
+
+  app.post("/api/admin/prop/invoice/:id/confirm", authenticate, isAdmin, async (req, res) => {
+    const inv = await store.getInvoice(req.params.id);
+    if (!inv) return res.status(404).json({ error: "Invoice not found" });
+    if (inv.status !== "confirmed") {
+      inv.status = "confirmed";
+      await store.saveInvoice(inv);
+      await store.logPayAudit({ userId: inv.userId, action: "admin_manual_confirm_invoice", field: "invoice", newValue: inv.id, ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress || "" });
+    }
+    try {
+      const user = await store.getUserById(inv.userId);
+      if (user && !inv.challengeId) {
+        const row = await startChallenge(user, inv.tier, false, inv.ref);
+        inv.challengeId = row.id;
+        if (!inv.bookedRevenue && Number(inv.usd) > 0) {
+          await store.recordRevenue({ type: "challenge", amount: inv.usd, userId: inv.userId, username: inv.username, ref: inv.tier, note: "Capital seat invoice (manual confirm)" });
+          inv.bookedRevenue = true;
+        }
+        await store.saveInvoice(inv);
+        return res.json({ ok: true, invoice: pay.publicInvoice(inv), challenge: publicChallenge(row) });
+      }
+    } catch (e) {
+      return res.json({ ok: true, invoice: pay.publicInvoice(inv), error: e.message });
+    }
+    res.json({ ok: true, invoice: pay.publicInvoice(inv) });
   });
 
   app.patch("/api/admin/prop", authenticate, isAdmin, async (req, res) => {
