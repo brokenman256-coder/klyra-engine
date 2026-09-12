@@ -838,6 +838,20 @@ app.post("/api/admin/users/:id/reset-password", authenticate, isAdmin, async (re
   res.json({ ok: true, message: "Password reset. All existing sessions for this user were signed out." });
 });
 
+app.post("/api/admin/users/:id/set-role", authenticate, isAdmin, async (req, res) => {
+  const { role } = req.body || {};
+  if (role !== "admin" && role !== "user") return res.status(400).json({ error: "Role must be 'admin' or 'user'" });
+  const user = await User.findById(req.params.id);
+  if (!user) return res.status(404).json({ error: "User not found" });
+  if (role === "user" && String(user._id) === String(req.auth.id)) return res.status(400).json({ error: "Cannot demote your own account" });
+  user.role = role;
+  user.tokenVersion = (user.tokenVersion || 0) + 1;
+  await user.save();
+  disconnectUserSockets(user._id);
+  await store.logPayAudit({ userId: user._id, action: "admin-set-role", detail: "Role set to " + role + " by admin " + (req.auth && req.auth.username || ""), ip: ipOf(req) });
+  res.json({ ok: true, user: publicUser(user) });
+});
+
 app.get("/api/admin/trades", authenticate, isAdmin, async (req, res) => {
   res.json(await store.allTrades(200));
 });
