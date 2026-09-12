@@ -23,8 +23,16 @@ const RULES = {
   ]
 };
 
+const ROUNDS = {
+  1: { round: 1, roundLabel: "Round 1 · Evaluation" },
+  2: { round: 2, roundLabel: "Round 2 · Verification" },
+  "funded": { round: 3, roundLabel: "Round 3 · Funded" },
+  "scaled": { round: 4, roundLabel: "Round 4 · Scaled funded" }
+};
+
 function publicChallenge(c) {
   if (!c) return null;
+  const roundInfo = ROUNDS[c.stage] || { round: 1, roundLabel: "Round 1 · Evaluation" };
   return {
     id: c.id,
     userId: c.userId,
@@ -38,6 +46,8 @@ function publicChallenge(c) {
     currentEquity: c.currentEquity,
     status: c.status,
     stage: c.stage,
+    round: roundInfo.round,
+    roundLabel: roundInfo.roundLabel,
     isTrial: !!c.isTrial,
     createdAt: c.createdAt,
     profitSplit: c.profitSplit,
@@ -97,7 +107,7 @@ async function startChallenge(user, tier, isTrial, referrerId) {
     dailyStartBalance: cfg.initial,
     currentEquity: cfg.initial,
     status: "active",
-    stage: 1,
+    stage: "1",
     isTrial: !!isTrial,
     profitSplit: prop.profitSplit,
     tradingDays: [],
@@ -346,7 +356,7 @@ function attach(app, deps) {
 
   app.post("/api/prop/payout", authenticate, async (req, res) => {
     const c = await store.getPropChallengeByUser(req.auth.id);
-    if (!c || c.stage !== "funded") return res.status(400).json({ error: "Funded desk only" });
+    if (!c || (c.stage !== "funded" && c.stage !== "scaled")) return res.status(400).json({ error: "Funded desk only" });
     const user = await store.getUserById(req.auth.id);
     if (!user || !user.cryptoPayout) return res.status(400).json({ error: "Save a Trust Wallet USDT address on your account first" });
     const qty = Number(req.body && req.body.qty);
@@ -438,19 +448,33 @@ function attach(app, deps) {
     const c = await store.getPropChallengeById(req.body && req.body.id);
     if (!c) return res.status(404).json({ error: "Not found" });
     const desk = await store.getUserById(c.propUserId);
-    if (c.stage === 1) {
-      c.stage = 2;
+    if (c.stage === "1") {
+      c.stage = "2";
       c.status = "active";
       c.locked = false;
       c.failReason = null;
       if (desk) await seedBook(desk, c.initialBalance);
       c.currentEquity = c.initialBalance;
       c.dailyStartBalance = c.initialBalance;
-    } else if (c.stage === 2 || c.status === "passed") {
+      c.targetProfit = Math.round(c.targetProfit / 2); // Round 2 (verification): easier target
+    } else if (c.stage === "2" || c.status === "passed") {
       c.stage = "funded";
       c.status = "active";
+      c.targetProfit = 0; // Round 3 (funded): no target, just stay inside drawdown
+    } else if (c.stage === "funded") {
+      // Round 4 (scaled): consistent funded performance earns a bigger book and a better split
+      const scale = 2;
+      c.stage = "scaled";
+      c.status = "active";
+      c.initialBalance = Math.round(c.initialBalance * scale);
+      c.currentEquity = c.initialBalance;
+      c.dailyStartBalance = c.initialBalance;
+      c.maxDrawdown = Math.round(c.maxDrawdown * scale);
+      c.dailyDrawdown = Math.round(c.dailyDrawdown * scale);
+      c.profitSplit = Math.min(0.9, Number(((c.profitSplit || 0.8) + 0.05).toFixed(2)));
+      if (desk) await seedBook(desk, c.initialBalance);
     } else {
-      return res.status(400).json({ error: "Already funded" });
+      return res.status(400).json({ error: "Already at the top round" });
     }
     await store.savePropChallenge(c);
     res.json({ ok: true, challenge: publicChallenge(c) });
