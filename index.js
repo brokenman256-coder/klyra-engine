@@ -418,11 +418,14 @@ app.post("/api/auth/register", async (req, res) => {
   if (await store.getUserByEmail(emailNorm)) {
     return res.status(400).json({ error: "That email is already registered. Sign in instead." });
   }
+  const otpCode = genOtp();
   const user = await User.create({
     username: String(username).trim().toLowerCase(),
     password: bcrypt.hashSync(password, ROUNDS),
     email: emailNorm,
-    emailVerified: true,
+    emailVerified: false,
+    otpCode,
+    otpExpiresAt: new Date(Date.now() + 10 * 60 * 1000),
     balances: { USDT: 10000 },
     startingEquity: 10000,
     role: "user",
@@ -430,9 +433,7 @@ app.post("/api/auth/register", async (req, res) => {
     lastIpAt: new Date()
   });
   await store.logIp({ userId: user._id, username: user.username, ip, action: "register", path: "/auth/register" });
-  emailer.sendWelcome(emailNorm, { username: user.username, userId: String(user._id) })
-    .then(mail => store.logMail({ userId: user._id, subject: mail.subject, html: mail.html, kind: "welcome" }))
-    .catch(e => console.error("sendWelcome", e.message));
+  emailer.sendOtp(emailNorm, otpCode).catch(e => console.error("sendOtp", e.message));
   res.json({ token: sign(user), user: publicUser(user) });
 });
 
