@@ -181,6 +181,8 @@ function publicInvoice(inv) {
   if (!inv) return null;
   return {
     id: inv.id,
+    userId: inv.userId,
+    username: inv.username,
     tier: inv.tier,
     chain: inv.chain,
     asset: inv.asset,
