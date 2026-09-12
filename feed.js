@@ -1,8 +1,8 @@
-// Klyra composite tape. Anchors on public spot, then applies a persistent
-// house index so our prints never line up tick-for-tick with Binance/Bybit/Coinbase.
+// Real price feed for a prop-firm terminal: pulls live public spot prices
+// (crypto via CoinGecko/Kraken, FX majors and metals via free public APIs)
+// and passes them through as-is — no artificial bias or drift. A trader's
+// fills should reference the real market, not a manipulated composite.
 const https = require("https");
-const crypto = require("crypto");
-const brand = require("./brand");
 
 const IDS = {
   BTC: "bitcoin",
@@ -52,18 +52,6 @@ function getJson(url) {
   });
 }
 
-function indexBias(symbol) {
-  const h = crypto.createHash("sha256").update(brand.engine + ":" + symbol).digest();
-  const n = h.readUInt32BE(0) / 0xffffffff;
-  return 0.0016 + n * 0.0028; // 0.16%–0.44% persistent lift unique to this venue
-}
-
-function sessionWave(symbol, now) {
-  const h = crypto.createHash("sha256").update(brand.engine + ":wave:" + symbol).digest().readUInt16BE(0);
-  const period = 7 * 60 * 1000 + (h % 5) * 60 * 1000;
-  return Math.sin((now / period) * Math.PI * 2) * 0.00035;
-}
-
 async function pullCoinGecko() {
   const ids = Object.values(IDS).join(",");
   const url = "https://api.coingecko.com/api/v3/simple/price?ids=" + ids + "&vs_currencies=usd";
@@ -97,28 +85,24 @@ async function pull() {
   }
 }
 
-function klyraMid(symbol, spot, now) {
-  if (!spot || spot <= 0) return null;
-  return spot * (1 + indexBias(symbol) + sessionWave(symbol, now));
+async function refresh(marketManager) {
+  try {
+    const px = Object.assign({}, await pull(), await pullFxAndMetals());
+    for (const [sym, spot] of Object.entries(px)) {
+      if (spot > 0) marketManager.externalPrices[sym] = spot;
+    }
+  } catch (e) {}
 }
 
 function attach(marketManager) {
-  const run = async () => {
-    try {
-      const px = Object.assign({}, await pull(), await pullFxAndMetals());
-      const now = Date.now();
-      for (const [sym, spot] of Object.entries(px)) {
-        const mid = klyraMid(sym, spot, now);
-        if (mid > 0) marketManager.externalPrices[sym] = mid;
-      }
-    } catch (e) {}
-  };
-  run();
+  refresh(marketManager);
   // In serverless (Vercel), a setInterval here never gets cleared and each
   // cold-start instance piles on its own copy, hammering external APIs and
   // MongoDB more with every new instance until things start failing. Only
-  // run the persistent loop on a real long-lived process.
-  if (!process.env.VERCEL) setInterval(run, 12000);
+  // run the persistent loop on a real long-lived process — on Vercel,
+  // index.js's per-request pulse() calls refresh() on a timer instead, same
+  // as the other periodic checks (invoices, challenges, pending orders).
+  if (!process.env.VERCEL) setInterval(() => refresh(marketManager), 12000);
 }
 
-module.exports = { attach, klyraMid, indexBias };
+module.exports = { attach, refresh };

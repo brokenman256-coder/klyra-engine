@@ -18,6 +18,7 @@ const pay = require("./pay");
 const live = require("./live");
 const upi = require("./upi");
 const emailer = require("./email");
+const feed = require("./feed");
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET || JWT_SECRET.length < 32) {
@@ -55,6 +56,11 @@ async function pulse() {
   marketManager.updateMarket();
   ticks++;
   if (ticks % 10 === 0) await store.saveMarkets(marketManager.snapshot());
+  // On a real long-lived process, feed.attach() already runs its own
+  // interval. On Vercel, that interval never fires between cold starts, so
+  // the per-request pulse is the only thing keeping real prices from going
+  // stale — refresh them here on the same rough ~12s cadence.
+  if (SERVERLESS && ticks % 8 === 0) feed.refresh(marketManager).catch(() => {});
   if (propApi) {
     try { await propApi.matchInvoices(); } catch (e) {}
     try { await propApi.checkChallenges(); } catch (e) {}
@@ -129,24 +135,24 @@ class MarketManager {
     for (const symbol in this.assets) {
       const asset = this.assets[symbol];
       if (symbol === "USDT" || asset.halted) continue;
-      let change = (Math.random() - 0.5) * asset.volatility;
-      if (asset.trend === "bull") change += asset.volatility * 0.08;
-      if (asset.trend === "bear") change -= asset.volatility * 0.08;
-      if (this.bias[symbol]) change += asset.price * this.bias[symbol];
-
-      // Snap toward Klyra composite, never a 1:1 copy of another venue.
       const ext = this.externalPrices[symbol];
-      if (ext) {
-        const deviation = (asset.price - ext) / ext;
-        const maxDev = 0.012;
-        if (Math.abs(deviation) > maxDev) {
-          change += (ext - asset.price) * 0.08;
-        } else {
-          change += (ext - asset.price) * 0.02;
-        }
+      if (ext > 0) {
+        // A real free feed exists for this symbol (crypto via CoinGecko/
+        // Kraken, EURUSD/GBPUSD/USDINR, Gold/Silver) — show that real price
+        // directly. A sub-pip jitter just keeps the chart alive between the
+        // feed's ~12s polls; it never moves the price away from the real
+        // quote by more than noise.
+        const jitter = ext * (Math.random() - 0.5) * 0.00006;
+        asset.price = ext + jitter;
+      } else {
+        // No free real-time source exists for this symbol (indices, crude
+        // oil) — simulate, honestly, rather than fabricate a "live" feed.
+        let change = (Math.random() - 0.5) * asset.volatility;
+        if (asset.trend === "bull") change += asset.volatility * 0.08;
+        if (asset.trend === "bear") change -= asset.volatility * 0.08;
+        if (this.bias[symbol]) change += asset.price * this.bias[symbol];
+        asset.price = Math.max(asset.price + change, 0.01);
       }
-
-      asset.price = Math.max(asset.price + change, symbol === "BTC" ? 1000 : 0.01);
       asset.high = Math.max(asset.high || asset.price, asset.price);
       asset.low = Math.min(asset.low || asset.price, asset.price);
 
@@ -1042,7 +1048,7 @@ app.post("/api/retail/trade", authenticate, async (req, res) => {
     res.json(result);
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
-require("./feed").attach(marketManager);
+feed.attach(marketManager);
 
 module.exports = app;
 if (!SERVERLESS) {
