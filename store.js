@@ -450,6 +450,14 @@ async function saveUser(u) {
   return await User.findByIdAndUpdate(u._id, u, { new: true });
 }
 
+// Sparse-unique indexes treat explicit nulls as values; strip them so writes never collide.
+async function clearNullIndexedFields() {
+  await User.updateMany({ upiId: null }, { $unset: { upiId: "" } });
+  await User.updateMany({ cryptoPayout: null }, { $unset: { cryptoPayout: "" } });
+  await User.updateMany({ walletAddress: null }, { $unset: { walletAddress: "" } });
+  await User.updateMany({ email: null }, { $unset: { email: "" } });
+}
+
 async function createTrade(t) {
   const trade = new Trade(t);
   await trade.save();
@@ -737,7 +745,7 @@ async function revenueSummary() {
 module.exports = {
   ready,
   id,
-  getUserByUsername, getUserByEmail, getUserById, getUserByUpi, getUserByWallet, listUsers, createUser, saveUser,
+  getUserByUsername, getUserByEmail, getUserById, getUserByUpi, getUserByWallet, listUsers, createUser, saveUser, clearNullIndexedFields,
   logPayAudit, upsertPayIdentity, utrTaken, registerUtr, listPayAudits,
   logIp, listIps, countUsersOnIp,
   logMail, listMail,
