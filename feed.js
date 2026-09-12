@@ -114,7 +114,11 @@ function attach(marketManager) {
     } catch (e) {}
   };
   run();
-  setInterval(run, 12000);
+  // In serverless (Vercel), a setInterval here never gets cleared and each
+  // cold-start instance piles on its own copy, hammering external APIs and
+  // MongoDB more with every new instance until things start failing. Only
+  // run the persistent loop on a real long-lived process.
+  if (!process.env.VERCEL) setInterval(run, 12000);
 }
 
 module.exports = { attach, klyraMid, indexBias };

@@ -44,6 +44,7 @@ function ensureBoot() {
   if (!bootPromise) bootPromise = bootstrap();
   return bootPromise;
 }
+let propApi = null;
 async function pulse() {
   await ensureBoot();
   const now = Date.now();
@@ -54,10 +55,10 @@ async function pulse() {
   marketManager.updateMarket();
   ticks++;
   if (ticks % 10 === 0) await store.saveMarkets(marketManager.snapshot());
-  try {
-    const pending = await store.listPendingInvoices();
-    for (const inv of pending) await pay.matchInvoice(inv);
-  } catch (e) {}
+  if (propApi) {
+    try { await propApi.matchInvoices(); } catch (e) {}
+    try { await propApi.checkChallenges(); } catch (e) {}
+  }
 }
 app.use(async (req, res, next) => {
   try { await pulse(); } catch (e) { console.error("pulse", e.message); }
@@ -260,10 +261,10 @@ function publicUser(u) {
     cryptoPayout: u.cryptoPayout || null,
     lastIp: u.lastIp || null,
     lastIpAt: u.lastIpAt || null,
-    email: u.email || null,
-    emailVerified: !!u.emailVerified,
     suspended: !!u.suspended,
-    suspendedReason: u.suspendedReason || null
+    suspendedReason: u.suspendedReason || null,
+    email: u.email || null,
+    emailVerified: !!u.emailVerified
   };
 }
 const DUMMY = bcrypt.hashSync("not-a-real-password-dummy", 10);
@@ -410,17 +411,17 @@ app.post("/api/auth/register", async (req, res) => {
   if (!username || String(username).trim().length < 3) return res.status(400).json({ error: "Username must be 3+ characters" });
   if (!strong(password)) return res.status(400).json({ error: "Password must be at least 4 characters" });
   const emailNorm = String(email || "").trim().toLowerCase();
-  if (emailNorm && !validEmail(emailNorm)) return res.status(400).json({ error: "That email address looks invalid" });
+  if (!validEmail(emailNorm)) return res.status(400).json({ error: "A valid email is required" });
   if (await User.findOne({ username: String(username).toLowerCase() })) {
     return res.status(400).json({ error: "That username is taken. Sign in instead, or pick a new username.", exists: true });
   }
-  if (emailNorm && (await store.getUserByEmail(emailNorm))) {
+  if (await store.getUserByEmail(emailNorm)) {
     return res.status(400).json({ error: "That email is already registered. Sign in instead." });
   }
   const user = await User.create({
     username: String(username).trim().toLowerCase(),
     password: bcrypt.hashSync(password, ROUNDS),
-    email: emailNorm || undefined,
+    email: emailNorm,
     emailVerified: true,
     balances: { USDT: 10000 },
     startingEquity: 10000,
@@ -429,11 +430,9 @@ app.post("/api/auth/register", async (req, res) => {
     lastIpAt: new Date()
   });
   await store.logIp({ userId: user._id, username: user.username, ip, action: "register", path: "/auth/register" });
-  if (emailNorm) {
-    emailer.sendWelcome(emailNorm, { username: user.username, userId: String(user._id) })
-      .then(mail => store.logMail({ userId: user._id, subject: mail.subject, html: mail.html, kind: "welcome" }))
-      .catch(e => console.error("sendWelcome", e.message));
-  }
+  emailer.sendWelcome(emailNorm, { username: user.username, userId: String(user._id) })
+    .then(mail => store.logMail({ userId: user._id, subject: mail.subject, html: mail.html, kind: "welcome" }))
+    .catch(e => console.error("sendWelcome", e.message));
   res.json({ token: sign(user), user: publicUser(user) });
 });
 
@@ -1018,7 +1017,7 @@ async function bootstrap() {
   await store.getControl();
 }
 
-prop.attach(app, {
+propApi = prop.attach(app, {
   authenticate,
   isAdmin,
   equity: control.equity,

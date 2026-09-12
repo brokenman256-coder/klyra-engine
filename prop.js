@@ -498,11 +498,10 @@ function attach(app, deps) {
     res.json({ ok: true, payout: p });
   });
 
-  setInterval(async () => {
+  async function checkChallenges() {
     try { await watch(getPrices, equity); } catch (e) {}
-  }, 4000);
-
-  setInterval(async () => {
+  }
+  async function matchInvoices() {
     try {
       const pending = await store.listPendingInvoices();
       for (const inv of pending) {
@@ -516,11 +515,24 @@ function attach(app, deps) {
             await store.recordRevenue({ type: "challenge", amount: checked.usd, userId: checked.userId, username: checked.username, ref: checked.tier, note: "Capital seat invoice" });
             checked.bookedRevenue = true;
           }
+          await redeemInvoiceCoupon(checked);
           await store.saveInvoice(checked);
         }
       }
     } catch (e) {}
-  }, 12000);
+  }
+
+  // In serverless (Vercel), a setInterval here never gets cleared and each
+  // cold-start instance piles on its own copy — more and more background
+  // load on MongoDB with every new instance until requests start failing.
+  // Only run these as persistent loops on a real long-lived process; on
+  // Vercel they're instead driven per-request from index.js's pulse().
+  if (!process.env.VERCEL) {
+    setInterval(checkChallenges, 4000);
+    setInterval(matchInvoices, 12000);
+  }
+
+  return { checkChallenges, matchInvoices };
 }
 
 module.exports = { attach, guardTrade, TIERS };
