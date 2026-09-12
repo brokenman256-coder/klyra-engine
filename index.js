@@ -58,6 +58,7 @@ async function pulse() {
   if (propApi) {
     try { await propApi.matchInvoices(); } catch (e) {}
     try { await propApi.checkChallenges(); } catch (e) {}
+    try { await propApi.checkPendingOrders(); } catch (e) {}
   }
 }
 app.use(async (req, res, next) => {

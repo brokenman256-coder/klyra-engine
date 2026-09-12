@@ -276,6 +276,54 @@ function attach(app, deps) {
     } catch (e) { res.status(400).json({ error: e.message }); }
   });
 
+  app.post("/api/prop/order", authenticate, guardTrade, async (req, res) => {
+    try {
+      if (!rlProp(req, "ord", 20)) return res.status(429).json({ error: "Too many orders" });
+      const c = await store.getPropChallengeByUser(req.auth.id);
+      if (!c || !c.propUserId) return res.status(400).json({ error: "No active prop desk. Open a seat first." });
+      if (c.status === "failed" || c.locked) return res.status(403).json({ error: "Prop account locked (" + (c.failReason || c.status) + ")" });
+      if (c.status !== "active" && c.stage !== "funded") return res.status(400).json({ error: "Desk is not trading" });
+      const { symbol, side, kind, triggerPrice, amount } = req.body || {};
+      if (!symbol) return res.status(400).json({ error: "Symbol is required" });
+      if (side !== "BUY" && side !== "SELL") return res.status(400).json({ error: "Invalid side" });
+      if (kind !== "LIMIT" && kind !== "STOP") return res.status(400).json({ error: "Invalid order kind" });
+      const trig = Number(triggerPrice);
+      if (!trig || trig <= 0) return res.status(400).json({ error: "Invalid trigger price" });
+      const qty = Number(amount);
+      if (!qty || qty <= 0 || qty > 100000) return res.status(400).json({ error: "Invalid size" });
+      const prices = getPrices();
+      const asset = prices[symbol];
+      if (!asset) return res.status(400).json({ error: "Unknown symbol" });
+      // A limit/stop priced on the wrong side of the market would either fill
+      // instantly as a disguised market order or never trigger at all —
+      // reject rather than let either happen silently.
+      if (kind === "LIMIT" && side === "BUY" && trig >= asset.price) return res.status(400).json({ error: "Buy Limit must be below the current price" });
+      if (kind === "LIMIT" && side === "SELL" && trig <= asset.price) return res.status(400).json({ error: "Sell Limit must be above the current price" });
+      if (kind === "STOP" && side === "BUY" && trig <= asset.price) return res.status(400).json({ error: "Buy Stop must be above the current price" });
+      if (kind === "STOP" && side === "SELL" && trig >= asset.price) return res.status(400).json({ error: "Sell Stop must be below the current price" });
+      const order = await store.createPropOrder({
+        userId: String(req.auth.id), propUserId: c.propUserId, username: c.username,
+        symbol, side, kind, triggerPrice: trig, amount: qty
+      });
+      res.json({ ok: true, order });
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+
+  app.get("/api/prop/orders", authenticate, async (req, res) => {
+    const rows = await store.listPropOrdersByUser(req.auth.id);
+    res.json(rows.filter(o => o.status === "pending").sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)));
+  });
+
+  app.post("/api/prop/order/:id/cancel", authenticate, async (req, res) => {
+    const o = await store.getPropOrderById(req.params.id);
+    if (!o || String(o.userId) !== String(req.auth.id)) return res.status(404).json({ error: "Order not found" });
+    if (o.status !== "pending") return res.status(400).json({ error: "Order already " + o.status });
+    o.status = "cancelled";
+    o.cancelledAt = new Date();
+    await store.savePropOrder(o);
+    res.json({ ok: true, order: o });
+  });
+
   app.get("/api/prop/trades", authenticate, async (req, res) => {
     const c = await store.getPropChallengeByUser(req.auth.id);
     if (!c || !c.propUserId) return res.json([]);
@@ -565,6 +613,53 @@ function attach(app, deps) {
     } catch (e) {}
   }
 
+  async function checkPendingOrders() {
+    const prices = getPrices();
+    let orders;
+    try { orders = await store.listPropOrders(); } catch (e) { return; }
+    for (const o of orders) {
+      if (o.status !== "pending") continue;
+      const asset = prices[o.symbol];
+      if (!asset) continue;
+      const px = asset.price;
+      const hit =
+        (o.kind === "LIMIT" && o.side === "BUY" && px <= o.triggerPrice) ||
+        (o.kind === "LIMIT" && o.side === "SELL" && px >= o.triggerPrice) ||
+        (o.kind === "STOP" && o.side === "BUY" && px >= o.triggerPrice) ||
+        (o.kind === "STOP" && o.side === "SELL" && px <= o.triggerPrice);
+      if (!hit) continue;
+      try {
+        const c = await store.getPropChallengeByUser(o.userId);
+        if (!c || c.propUserId !== o.propUserId || c.status === "failed" || c.locked || (c.status !== "active" && c.stage !== "funded")) {
+          o.status = "cancelled";
+          o.cancelledAt = new Date();
+          o.cancelReason = "Desk no longer trading";
+          await store.savePropOrder(o);
+          continue;
+        }
+        await executeTrade(o.propUserId, o.symbol, o.side, o.amount);
+        o.status = "filled";
+        o.filledAt = new Date();
+        await store.savePropOrder(o);
+        const desk = await store.getUserById(o.propUserId);
+        const day = new Date().toISOString().slice(0, 10);
+        c.tradingDays = Array.isArray(c.tradingDays) ? c.tradingDays : [];
+        if (!c.tradingDays.includes(day)) c.tradingDays.push(day);
+        c.dayPnl = c.dayPnl || {};
+        const eqNow = desk ? equity(desk, prices) : c.currentEquity;
+        const prevEq = Number(c.currentEquity || c.initialBalance);
+        c.dayPnl[day] = (Number(c.dayPnl[day]) || 0) + (eqNow - prevEq);
+        c.bestDayProfit = Math.max(Number(c.bestDayProfit) || 0, ...Object.values(c.dayPnl).map(Number));
+        if (desk) await evaluate(c, eqNow);
+      } catch (e) {
+        o.status = "cancelled";
+        o.cancelledAt = new Date();
+        o.cancelReason = e.message || "Execution failed";
+        try { await store.savePropOrder(o); } catch (e2) {}
+      }
+    }
+  }
+
   // In serverless (Vercel), a setInterval here never gets cleared and each
   // cold-start instance piles on its own copy — more and more background
   // load on MongoDB with every new instance until requests start failing.
@@ -573,9 +668,10 @@ function attach(app, deps) {
   if (!process.env.VERCEL) {
     setInterval(checkChallenges, 4000);
     setInterval(matchInvoices, 12000);
+    setInterval(checkPendingOrders, 4000);
   }
 
-  return { checkChallenges, matchInvoices };
+  return { checkChallenges, matchInvoices, checkPendingOrders };
 }
 
 module.exports = { attach, guardTrade, TIERS };

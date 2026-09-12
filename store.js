@@ -144,6 +144,22 @@ const PropSchema = new mongoose.Schema({
     status: { type: String, default: "pending" },
     settledAt: Date,
     createdAt: { type: Date, default: Date.now }
+  }],
+  orders: [{
+    id: String,
+    userId: String,
+    propUserId: String,
+    username: String,
+    symbol: String,
+    side: { type: String, enum: ["BUY", "SELL"] },
+    kind: { type: String, enum: ["LIMIT", "STOP"] },
+    triggerPrice: Number,
+    amount: Number,
+    status: { type: String, default: "pending" },
+    createdAt: { type: Date, default: Date.now },
+    filledAt: Date,
+    cancelledAt: Date,
+    cancelReason: String
   }]
 });
 
@@ -584,7 +600,7 @@ async function getProp() {
     p = await Prop.create({
       enabled: true, autoWatch: true, profitSplit: 0.8,
       pricing: { "10k": 19, "50k": 59, "100k": 99 },
-      challenges: [], referrals: [], payouts: []
+      challenges: [], referrals: [], payouts: [], orders: []
     });
   }
   return p.toObject();
@@ -656,6 +672,34 @@ async function savePropPayout(pout) {
   if (idx >= 0) p.payouts[idx] = pout;
   await p.save();
   return pout;
+}
+
+async function listPropOrders() {
+  const p = await Prop.findOne();
+  return p.orders || [];
+}
+async function listPropOrdersByUser(uid) {
+  const p = await Prop.findOne();
+  return (p.orders || []).filter(o => String(o.userId) === String(uid));
+}
+async function getPropOrderById(oid) {
+  const p = await Prop.findOne();
+  return (p.orders || []).find(o => o.id === oid) || null;
+}
+async function createPropOrder(doc) {
+  const p = await Prop.findOne();
+  const row = { ...doc, id: "ord_" + id(), status: "pending", createdAt: new Date() };
+  p.orders = p.orders || [];
+  p.orders.push(row);
+  await p.save();
+  return row;
+}
+async function savePropOrder(o) {
+  const p = await Prop.findOne();
+  const idx = (p.orders || []).findIndex(x => x.id === o.id);
+  if (idx >= 0) p.orders[idx] = o;
+  await p.save();
+  return o;
 }
 
 async function createInvoice(doc) {
@@ -752,6 +796,7 @@ module.exports = {
   getProp, patchProp, listPropChallenges, getPropChallengeByUser, getPropChallengeById,
   createPropChallenge, savePropChallenge, getPropReferral, addPropCommission,
   listPropPayouts, getPropPayout, createPropPayout, savePropPayout,
+  listPropOrders, listPropOrdersByUser, getPropOrderById, createPropOrder, savePropOrder,
   createInvoice, getInvoice, saveInvoice, listPendingInvoices, invoicesOf, usedInvoiceHashes,
   createCoupon, getCouponByCode, listCoupons, setCouponActive, redeemCoupon,
   recordRevenue, revenueSummary,
