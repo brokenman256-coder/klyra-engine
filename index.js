@@ -966,6 +966,7 @@ if (!SERVERLESS) {
 
 async function bootstrap() {
   await store.ready();
+  await store.clearNullIndexedFields();
   await marketManager.init();
   const adminName = (process.env.ADMIN_USERNAME || "admin").toLowerCase();
   const traderName = (process.env.TRADER_USERNAME || "trader").toLowerCase();
