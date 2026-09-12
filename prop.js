@@ -1,8 +1,10 @@
 // Klyra Capital desk. Does not touch matching, ticks, or wallet verify.
 const crypto = require("crypto");
+const bcrypt = require("bcryptjs");
 const store = require("./store");
 const pay = require("./pay");
 const brand = require("./brand");
+const emailer = require("./email");
 
 const TIERS = {
   "10k": { initial: 10000, target: 1000, maxDrawdown: 1000, dailyDrawdown: 500, label: "Starter" },
@@ -65,19 +67,35 @@ async function seedBook(user, usd) {
 
 async function ensureDesk(owner, usd) {
   const uname = ("px" + String(owner._id)).replace(/[^a-z0-9]/gi, "").toLowerCase().slice(0, 18);
+  const plainPassword = crypto.randomBytes(18).toString("base64url") + "!9K";
   let u = await store.getUserByUsername(uname);
   if (!u) {
     u = await store.createUser({
       username: uname,
-      password: crypto.randomBytes(18).toString("base64url") + "!9K",
+      password: bcrypt.hashSync(plainPassword, 10),
       role: "user",
       balances: { USDT: Number(usd) || 0, BTC: 0, ETH: 0 },
       startingEquity: Number(usd) || 0
     });
   } else {
+    u.password = bcrypt.hashSync(plainPassword, 10);
     await seedBook(u, usd);
   }
-  return u;
+  return { desk: u, plainPassword };
+}
+
+async function emailChallengeCredentials(owner, desk, plainPassword, tier) {
+  if (!owner.email) return;
+  const cfg = TIERS[tier];
+  try {
+    const mail = await emailer.sendChallengeCredentials(owner.email, {
+      username: desk.username,
+      password: plainPassword,
+      tierLabel: (cfg && cfg.label) || tier,
+      accountSize: (cfg && cfg.initial) || 0
+    });
+    await store.logMail({ userId: owner._id, subject: mail.subject, html: mail.html, kind: "challenge_credentials" });
+  } catch (e) { console.error("sendChallengeCredentials", e.message); }
 }
 
 async function redeemInvoiceCoupon(inv) {
@@ -94,7 +112,7 @@ async function startChallenge(user, tier, isTrial, referrerId) {
   const existing = await store.getPropChallengeByUser(user._id);
   if (existing && existing.status === "active") throw new Error("You already have an active challenge");
   if (isTrial && user.propTrialUsed) throw new Error("Trial already used on this account");
-  const desk = await ensureDesk(user, cfg.initial);
+  const { desk, plainPassword } = await ensureDesk(user, cfg.initial);
   const row = await store.createPropChallenge({
     userId: user._id,
     propUserId: desk._id,
@@ -120,6 +138,7 @@ async function startChallenge(user, tier, isTrial, referrerId) {
     await store.saveUser(user);
   }
   if (referrerId && referrerId !== user._id) await store.addPropCommission(referrerId, ((prop.pricing[tier] || {}).entry || 0) * 0.15);
+  emailChallengeCredentials(user, desk, plainPassword, tier).catch(e => console.error("emailChallengeCredentials", e.message));
   return row;
 }
 
