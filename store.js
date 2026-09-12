@@ -180,7 +180,20 @@ const InvoiceSchema = new mongoose.Schema({
   expiresAt: String,
   confirmedAt: String,
   bookedRevenue: { type: Boolean, default: false },
-  challengeId: String
+  challengeId: String,
+  couponCode: String,
+  couponRedeemed: { type: Boolean, default: false }
+});
+
+const CouponSchema = new mongoose.Schema({
+  code: { type: String, unique: true, uppercase: true },
+  amountUsd: Number,
+  maxUses: { type: Number, default: 1 },
+  uses: { type: Number, default: 0 },
+  usedBy: { type: [String], default: [] },
+  active: { type: Boolean, default: true },
+  createdBy: String,
+  createdAt: { type: Date, default: Date.now }
 });
 
 const User = mongoose.model("User", UserSchema);
@@ -192,6 +205,7 @@ const Withdrawal = mongoose.model("Withdrawal", WithdrawalSchema);
 const Control = mongoose.model("Control", ControlSchema);
 const Prop = mongoose.model("Prop", PropSchema);
 const Market = mongoose.model("Market", MarketSchema);
+const Coupon = mongoose.model("Coupon", CouponSchema);
 const Invoice = mongoose.model("Invoice", InvoiceSchema);
 const Revenue = mongoose.model("Revenue", RevenueSchema);
 const P2pMatchSchema = new mongoose.Schema({
@@ -661,6 +675,34 @@ async function usedInvoiceHashes() {
   return new Set(rows.map(r => r.txHash).filter(Boolean));
 }
 
+async function createCoupon(doc) {
+  const row = await Coupon.create({
+    code: String(doc.code).toUpperCase(),
+    amountUsd: Number(doc.amountUsd),
+    maxUses: Math.max(1, Number(doc.maxUses) || 1),
+    createdBy: doc.createdBy || ""
+  });
+  return row.toObject();
+}
+async function getCouponByCode(code) {
+  return await Coupon.findOne({ code: String(code || "").toUpperCase() }).lean();
+}
+async function listCoupons() {
+  return await Coupon.find().sort({ createdAt: -1 }).lean();
+}
+async function setCouponActive(code, active) {
+  return await Coupon.findOneAndUpdate({ code: String(code || "").toUpperCase() }, { active: !!active }, { new: true }).lean();
+}
+async function redeemCoupon(code, userId) {
+  const c = String(code || "").toUpperCase();
+  const row = await Coupon.findOneAndUpdate(
+    { code: c, active: true, usedBy: { $ne: String(userId) }, $expr: { $lt: ["$uses", "$maxUses"] } },
+    { $inc: { uses: 1 }, $push: { usedBy: String(userId) } },
+    { new: true }
+  ).lean();
+  return row;
+}
+
 async function recordRevenue(doc) {
   if (!doc || !(Number(doc.amount) > 0)) return null;
   const row = await Revenue.create({
@@ -705,6 +747,7 @@ module.exports = {
   createPropChallenge, savePropChallenge, getPropReferral, addPropCommission,
   listPropPayouts, getPropPayout, createPropPayout, savePropPayout,
   createInvoice, getInvoice, saveInvoice, listPendingInvoices, invoicesOf, usedInvoiceHashes,
+  createCoupon, getCouponByCode, listCoupons, setCouponActive, redeemCoupon,
   recordRevenue, revenueSummary,
   createUpiOrder: async (doc) => { await UpiOrder.create(doc); return doc; },
   getUpiOrder: async (id) => UpiOrder.findOne({ id }).lean(),

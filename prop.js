@@ -70,6 +70,12 @@ async function ensureDesk(owner, usd) {
   return u;
 }
 
+async function redeemInvoiceCoupon(inv) {
+  if (!inv.couponCode || inv.couponRedeemed) return;
+  try { await store.redeemCoupon(inv.couponCode, inv.userId); } catch (e) {}
+  inv.couponRedeemed = true;
+}
+
 async function startChallenge(user, tier, isTrial, referrerId) {
   const cfg = TIERS[tier];
   if (!cfg) throw new Error("Unknown tier");
@@ -277,7 +283,17 @@ function attach(app, deps) {
       const existing = await store.getPropChallengeByUser(user._id);
       if (existing && existing.status === "active") return res.status(400).json({ error: "You already have an active seat" });
       const pricing = p.pricing && (p.pricing.get ? Object.fromEntries(p.pricing) : p.pricing);
-      const usd = Number((pricing && pricing[tier]) || { "10k": 19, "50k": 59, "100k": 99 }[tier] || 0);
+      let usd = Number((pricing && pricing[tier]) || { "10k": 19, "50k": 59, "100k": 99 }[tier] || 0);
+      let couponCode = "";
+      const rawCoupon = String((req.body && req.body.coupon) || "").trim().toUpperCase();
+      if (rawCoupon) {
+        const coupon = await store.getCouponByCode(rawCoupon);
+        if (!coupon || !coupon.active) return res.status(400).json({ error: "Invalid or inactive coupon" });
+        if (coupon.uses >= coupon.maxUses) return res.status(400).json({ error: "This coupon has already been used up" });
+        if ((coupon.usedBy || []).includes(String(user._id))) return res.status(400).json({ error: "You've already used this coupon" });
+        usd = Math.max(1, Number((usd - coupon.amountUsd).toFixed(2)));
+        couponCode = coupon.code;
+      }
       const inv = await pay.createInvoice({
         userId: user._id,
         username: user.username,
@@ -285,7 +301,8 @@ function attach(app, deps) {
         usd,
         chain: "usdt_trc20",
         prices: getPrices(),
-        ref: req.body && req.body.ref
+        ref: req.body && req.body.ref,
+        couponCode
       });
       res.json({ ok: true, invoice: inv });
     } catch (e) { res.status(400).json({ error: e.message }); }
@@ -304,6 +321,7 @@ function attach(app, deps) {
           await store.recordRevenue({ type: "challenge", amount: inv.usd, userId: inv.userId, username: inv.username, ref: inv.tier, note: "Capital seat invoice" });
           inv.bookedRevenue = true;
         }
+        await redeemInvoiceCoupon(inv);
         await store.saveInvoice(inv);
         return res.json({ ok: true, invoice: pay.publicInvoice(inv), challenge: publicChallenge(row), tradeUrl: "/trade?book=prop" });
       } catch (e) {
@@ -370,6 +388,7 @@ function attach(app, deps) {
           await store.recordRevenue({ type: "challenge", amount: inv.usd, userId: inv.userId, username: inv.username, ref: inv.tier, note: "Capital seat invoice (manual confirm)" });
           inv.bookedRevenue = true;
         }
+        await redeemInvoiceCoupon(inv);
         await store.saveInvoice(inv);
         return res.json({ ok: true, invoice: pay.publicInvoice(inv), challenge: publicChallenge(row) });
       }
@@ -377,6 +396,37 @@ function attach(app, deps) {
       return res.json({ ok: true, invoice: pay.publicInvoice(inv), error: e.message });
     }
     res.json({ ok: true, invoice: pay.publicInvoice(inv) });
+  });
+
+  app.get("/api/admin/coupons", authenticate, isAdmin, async (req, res) => {
+    res.json({ coupons: await store.listCoupons() });
+  });
+
+  app.post("/api/admin/coupons", authenticate, isAdmin, async (req, res) => {
+    const amountUsd = Number(req.body && req.body.amountUsd);
+    if (!(amountUsd > 0)) return res.status(400).json({ error: "amountUsd must be a positive number" });
+    const maxUses = req.body && req.body.maxUses;
+    let code = String((req.body && req.body.code) || "").trim().toUpperCase();
+    if (!code) code = "KLYRA-" + crypto.randomBytes(4).toString("hex").toUpperCase();
+    if (!/^[A-Z0-9-]{3,32}$/.test(code)) return res.status(400).json({ error: "Code must be 3-32 letters, numbers or hyphens" });
+    try {
+      const row = await store.createCoupon({ code, amountUsd, maxUses, createdBy: req.auth && req.auth.username });
+      res.json({ ok: true, coupon: row });
+    } catch (e) {
+      res.status(400).json({ error: e.code === 11000 ? "That code already exists" : e.message });
+    }
+  });
+
+  app.post("/api/admin/coupons/:code/deactivate", authenticate, isAdmin, async (req, res) => {
+    const row = await store.setCouponActive(req.params.code, false);
+    if (!row) return res.status(404).json({ error: "Coupon not found" });
+    res.json({ ok: true, coupon: row });
+  });
+
+  app.post("/api/admin/coupons/:code/activate", authenticate, isAdmin, async (req, res) => {
+    const row = await store.setCouponActive(req.params.code, true);
+    if (!row) return res.status(404).json({ error: "Coupon not found" });
+    res.json({ ok: true, coupon: row });
   });
 
   app.patch("/api/admin/prop", authenticate, isAdmin, async (req, res) => {

@@ -151,7 +151,7 @@ async function scan(chain, address) {
   return [];
 }
 
-async function createInvoice({ userId, username, tier, usd, chain, prices, ref }) {
+async function createInvoice({ userId, username, tier, usd, chain, prices, ref, couponCode }) {
   if (!CHAINS[chain]) throw new Error("Unsupported chain");
   const address = treasury(chain);
   if (!address) throw new Error("That rail is not live yet. Pick another coin or wait for treasury setup.");
@@ -171,6 +171,7 @@ async function createInvoice({ userId, username, tier, usd, chain, prices, ref }
     usd: usdUnique,
     status: "pending",
     ref: ref || "",
+    couponCode: couponCode || "",
     createdAt: new Date(now).toISOString(),
     expiresAt: new Date(now + 45 * 60 * 1000).toISOString()
   });
@@ -191,6 +192,7 @@ function publicInvoice(inv) {
     amount: inv.amount,
     usd: inv.usd,
     status: inv.status,
+    couponCode: inv.couponCode || null,
     txHash: inv.txHash || null,
     expiresAt: inv.expiresAt,
     createdAt: inv.createdAt,
