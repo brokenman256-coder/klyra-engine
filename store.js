@@ -214,6 +214,7 @@ const CouponSchema = new mongoose.Schema({
   uses: { type: Number, default: 0 },
   usedBy: { type: [String], default: [] },
   active: { type: Boolean, default: true },
+  freeEntry: { type: Boolean, default: false },
   createdBy: String,
   createdAt: { type: Date, default: Date.now }
 });
@@ -738,6 +739,7 @@ async function createCoupon(doc) {
     code: String(doc.code).toUpperCase(),
     amountUsd: Number(doc.amountUsd),
     maxUses: Math.max(1, Number(doc.maxUses) || 1),
+    freeEntry: !!doc.freeEntry,
     createdBy: doc.createdBy || ""
   });
   return row.toObject();

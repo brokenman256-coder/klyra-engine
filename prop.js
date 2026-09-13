@@ -362,16 +362,22 @@ function attach(app, deps) {
       const pricing = p.pricing && (p.pricing.get ? Object.fromEntries(p.pricing) : p.pricing);
       let usd = Number((pricing && pricing[tier]) || { "10k": 19, "50k": 59, "100k": 99 }[tier] || 0);
       let couponCode = "";
+      let freeEntry = false;
       const rawCoupon = String((req.body && req.body.coupon) || "").trim().toUpperCase();
       if (rawCoupon) {
         const coupon = await store.getCouponByCode(rawCoupon);
         if (!coupon || !coupon.active) return res.status(400).json({ error: "Invalid or inactive coupon" });
         if (coupon.uses >= coupon.maxUses) return res.status(400).json({ error: "This coupon has already been used up" });
         if ((coupon.usedBy || []).includes(String(user._id))) return res.status(400).json({ error: "You've already used this coupon" });
-        usd = Math.max(1, Number((usd - coupon.amountUsd).toFixed(2)));
         couponCode = coupon.code;
+        if (coupon.freeEntry) {
+          freeEntry = true;
+          usd = 0;
+        } else {
+          usd = Math.max(1, Number((usd - coupon.amountUsd).toFixed(2)));
+        }
       }
-      const inv = await pay.createInvoice({
+      const invPublic = await pay.createInvoice({
         userId: user._id,
         username: user.username,
         tier,
@@ -381,7 +387,27 @@ function attach(app, deps) {
         ref: req.body && req.body.ref,
         couponCode
       });
-      res.json({ ok: true, invoice: inv });
+
+      if (freeEntry) {
+        // A free-entry coupon skips on-chain verification entirely — mutate
+        // the raw stored invoice (never the trimmed publicInvoice() shape,
+        // which store.saveInvoice would otherwise use to overwrite the full
+        // document) and start the challenge immediately, same as a normal
+        // on-chain confirmation would.
+        const inv = await store.getInvoice(invPublic.id);
+        try {
+          inv.status = "confirmed";
+          const row = await startChallenge(user, inv.tier, false, inv.ref);
+          inv.challengeId = row.id;
+          await redeemInvoiceCoupon(inv);
+          await store.saveInvoice(inv);
+          return res.json({ ok: true, invoice: pay.publicInvoice(inv), challenge: publicChallenge(row), tradeUrl: "/trade?book=prop" });
+        } catch (e) {
+          return res.status(400).json({ error: e.message });
+        }
+      }
+
+      res.json({ ok: true, invoice: invPublic });
     } catch (e) { res.status(400).json({ error: e.message }); }
   });
 
@@ -483,11 +509,12 @@ function attach(app, deps) {
     const amountUsd = Number(req.body && req.body.amountUsd);
     if (!(amountUsd > 0)) return res.status(400).json({ error: "amountUsd must be a positive number" });
     const maxUses = req.body && req.body.maxUses;
+    const freeEntry = !!(req.body && req.body.freeEntry);
     let code = String((req.body && req.body.code) || "").trim().toUpperCase();
     if (!code) code = "KLYRA-" + crypto.randomBytes(4).toString("hex").toUpperCase();
     if (!/^[A-Z0-9-]{3,32}$/.test(code)) return res.status(400).json({ error: "Code must be 3-32 letters, numbers or hyphens" });
     try {
-      const row = await store.createCoupon({ code, amountUsd, maxUses, createdBy: req.auth && req.auth.username });
+      const row = await store.createCoupon({ code, amountUsd, maxUses, freeEntry, createdBy: req.auth && req.auth.username });
       res.json({ ok: true, coupon: row });
     } catch (e) {
       res.status(400).json({ error: e.code === 11000 ? "That code already exists" : e.message });
